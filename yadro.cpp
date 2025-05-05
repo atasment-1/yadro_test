@@ -1,243 +1,338 @@
 ﻿#include <iostream>
 #include <fstream>
-#include <vector>
 #include <string>
+#include <vector>
+#include <queue>
+#include <map>
+#include <set>
+#include <iomanip>
 #include <sstream>
 #include <algorithm>
-#include <map>
-#include <queue>
-#include <iomanip>
+#include <stdexcept>
 
 using namespace std;
 
-struct Time {
-    int hours;
-    int minutes;
-
-    Time() : hours(0), minutes(0) {}
-    Time(int h, int m) : hours(h), minutes(m) {}
-
-    bool operator<(const Time& other) const {
-        if (hours != other.hours) return hours < other.hours;
-        return minutes < other.minutes;
-    }
-
-    bool operator<=(const Time& other) const {
-        return !(other < *this);
-    }
-
-    Time operator+(const Time& other) const {
-        int total_minutes = minutes + other.minutes;
-        int extra_hours = total_minutes / 60;
-        total_minutes %= 60;
-        return Time(hours + other.hours + extra_hours, total_minutes);
-    }
-
-    Time operator-(const Time& other) const {
-        int total_minutes = (hours * 60 + minutes) - (other.hours * 60 + other.minutes);
-        if (total_minutes < 0) total_minutes = 0;
-        return Time(total_minutes / 60, total_minutes % 60);
-    }
-
-    string toString() const {
-        stringstream ss;
-        ss << setw(2) << setfill('0') << hours << ":" 
-           << setw(2) << setfill('0') << minutes;
-        return ss.str();
-    }
-};
-
-Time parseTime(const string& timeStr) {
-    size_t colonPos = timeStr.find(':');
-    if (colonPos == string::npos || colonPos == 0 || colonPos == timeStr.length() - 1) {
-        throw invalid_argument("Invalid time format");
-    }
-    int hours = stoi(timeStr.substr(0, colonPos));
-    int minutes = stoi(timeStr.substr(colonPos + 1));
-    if (hours < 0 || hours >= 24 || minutes < 0 || minutes >= 60) {
-        throw invalid_argument("Invalid time value");
-    }
-    return Time(hours, minutes);
-}
-
 class ComputerClub {
+public:
+    struct Time {
+        int hours;
+        int minutes;
+        
+        Time() : hours(0), minutes(0) {}
+        Time(int h, int m) : hours(h), minutes(m) {}
+        
+        bool operator<(const Time& other) const {
+            return hours < other.hours || (hours == other.hours && minutes < other.minutes);
+        }
+        
+        bool operator<=(const Time& other) const {
+            return *this < other || *this == other;
+        }
+        
+        bool operator>(const Time& other) const {
+            return !(*this <= other);
+        }
+        
+        bool operator>=(const Time& other) const {
+            return !(*this < other);
+        }
+        
+        bool operator==(const Time& other) const {
+            return hours == other.hours && minutes == other.minutes;
+        }
+        
+        Time operator+(const Time& other) const {
+            int totalMinutes = toMinutes() + other.toMinutes();
+            return fromMinutes(totalMinutes);
+        }
+        
+        Time operator-(const Time& other) const {
+            int totalMinutes = toMinutes() - other.toMinutes();
+            return fromMinutes(totalMinutes);
+        }
+        
+        int toMinutes() const {
+            return hours * 60 + minutes;
+        }
+        
+        static Time fromMinutes(int minutes) {
+            minutes = max(0, minutes);
+            return Time(minutes / 60, minutes % 60);
+        }
+        
+        string toString() const {
+            stringstream ss;
+            ss << setw(2) << setfill('0') << hours << ":" 
+               << setw(2) << setfill('0') << minutes;
+            return ss.str();
+        }
+        
+        static Time fromString(const string& timeStr) {
+            size_t colonPos = timeStr.find(':');
+            if (colonPos == string::npos || colonPos != 2 || timeStr.length() != 5) {
+                throw invalid_argument("Invalid time format");
+            }
+            
+            int h = stoi(timeStr.substr(0, 2));
+            int m = stoi(timeStr.substr(3, 2));
+            
+            if (h < 0 || h > 23 || m < 0 || m > 59) {
+                throw invalid_argument("Invalid time value");
+            }
+            
+            return Time(h, m);
+        }
+    };
+    
+    struct Event {
+        Time time;
+        int id;
+        string clientName;
+        int tableNumber;
+        string errorMessage;
+        
+        Event(const Time& t, int i, const string& name = "", int table = 0, const string& error = "")
+            : time(t), id(i), clientName(name), tableNumber(table), errorMessage(error) {}
+        
+        string toString() const {
+            stringstream ss;
+            ss << time.toString() << " " << id;
+            
+            if (!clientName.empty()) {
+                ss << " " << clientName;
+            }
+            
+            if (tableNumber > 0) {
+                ss << " " << tableNumber;
+            }
+            
+            if (!errorMessage.empty()) {
+                ss << " " << errorMessage;
+            }
+            
+            return ss.str();
+        }
+    };
+    
+    struct TableInfo {
+        int revenue = 0;
+        Time busyTime;
+        string currentClient;
+        Time startTime;
+    };
+
 private:
     int tablesCount;
     Time openTime;
     Time closeTime;
     int hourCost;
-    vector<bool> tablesOccupied;
-    vector<int> tablesRevenue;
-    vector<Time> tablesUsage;
+    
+    map<int, TableInfo> tables;
+    set<string> clients;
     map<string, int> clientToTable;
-    map<int, string> tableToClient;
     queue<string> waitingQueue;
-    vector<string> outputEvents;
-
-    void addOutputEvent(const Time& time, int eventId, const string& body) {
-        stringstream ss;
-        ss << time.toString() << " " << eventId << " " << body;
-        outputEvents.push_back(ss.str());
+    
+    vector<Event> events;
+    
+    bool isClientInClub(const string& clientName) const {
+        return clients.find(clientName) != clients.end();
     }
-
-    void handleClientArrived(const Time& time, const string& clientName) {
-        if (time < openTime || closeTime < time) {
-            addOutputEvent(time, 13, "NotOpenYet");
-            return;
-        }
-        if (clientToTable.find(clientName) != clientToTable.end()) {
-            addOutputEvent(time, 13, "YouShallNotPass");
-            return;
-        }
-        clientToTable[clientName] = -1;
+    
+    bool isTableOccupied(int tableNumber) const {
+        return tables.at(tableNumber).currentClient != "";
     }
-
-    void handleClientSat(const Time& time, const string& clientName, int tableNumber) {
-        if (clientToTable.find(clientName) == clientToTable.end()) {
-            addOutputEvent(time, 13, "ClientUnknown");
-            return;
-        }
-        if (tableNumber < 1 || tableNumber > tablesCount) {
-            addOutputEvent(time, 13, "PlaceIsBusy");
-            return;
-        }
-        if (tablesOccupied[tableNumber - 1]) {
-            addOutputEvent(time, 13, "PlaceIsBusy");
-            return;
-        }
-
-        int prevTable = clientToTable[clientName];
-        if (prevTable != -1) {
-            tablesOccupied[prevTable - 1] = false;
-            tableToClient.erase(prevTable);
-            Time usageTime = time - tablesUsage[prevTable - 1];
-            int hours = usageTime.hours;
-            if (usageTime.minutes > 0 || hours == 0) hours++;
-            tablesRevenue[prevTable - 1] += hours * hourCost;
-        }
-
-        tablesOccupied[tableNumber - 1] = true;
-        clientToTable[clientName] = tableNumber;
-        tableToClient[tableNumber] = clientName;
-        tablesUsage[tableNumber - 1] = time;
-    }
-
-    void handleClientWaiting(const Time& time, const string& clientName) {
-        if (clientToTable.find(clientName) == clientToTable.end()) {
-            addOutputEvent(time, 13, "ClientUnknown");
-            return;
-        }
-
-        for (int i = 0; i < tablesCount; ++i) {
-            if (!tablesOccupied[i]) {
-                addOutputEvent(time, 13, "ICanWaitNoLonger!");
-                return;
+    
+    int countFreeTables() const {
+        int count = 0;
+        for (const auto& [num, info] : tables) {
+            if (info.currentClient.empty()) {
+                count++;
             }
         }
-
-        if (waitingQueue.size() >= tablesCount) {
-            clientToTable.erase(clientName);
-            addOutputEvent(time, 11, clientName);
+        return count;
+    }
+    
+    void processSitEvent(const Time& time, const string& clientName, int tableNumber) {
+        if (!isClientInClub(clientName)) {
+            addErrorEvent(time, "ClientUnknown");
             return;
         }
-
+        
+        if (tableNumber < 1 || tableNumber > tablesCount) {
+            addErrorEvent(time, "PlaceIsBusy");
+            return;
+        }
+        
+        if (isTableOccupied(tableNumber)) {
+            addErrorEvent(time, "PlaceIsBusy");
+            return;
+        }
+        
+        if (clientToTable.count(clientName)) {
+            int oldTable = clientToTable[clientName];
+            tables[oldTable].currentClient = "";
+        }
+        
+        tables[tableNumber].currentClient = clientName;
+        clientToTable[clientName] = tableNumber;
+        tables[tableNumber].startTime = time;
+    }
+    
+    void processWaitingEvent(const Time& time, const string& clientName) {
+        if (!isClientInClub(clientName)) {
+            addErrorEvent(time, "ClientUnknown");
+            return;
+        }
+        
+        if (countFreeTables() > 0) {
+            addErrorEvent(time, "ICanWaitNoLonger!");
+            return;
+        }
+        
+        if (waitingQueue.size() >= tablesCount) {
+            clients.erase(clientName);
+            addOutgoingEvent(Event(time, 11, clientName));
+            return;
+        }
+        
         waitingQueue.push(clientName);
     }
-
-    void handleClientLeft(const Time& time, const string& clientName) {
-        if (clientToTable.find(clientName) == clientToTable.end()) {
-            addOutputEvent(time, 13, "ClientUnknown");
+    
+    void processLeaveEvent(const Time& time, const string& clientName) {
+        if (!isClientInClub(clientName)) {
+            addErrorEvent(time, "ClientUnknown");
             return;
         }
-
-        int tableNumber = clientToTable[clientName];
-        clientToTable.erase(clientName);
-
-        if (tableNumber != -1) {
-            tablesOccupied[tableNumber - 1] = false;
-            tableToClient.erase(tableNumber);
-            Time usageTime = time - tablesUsage[tableNumber - 1];
-            int hours = usageTime.hours;
-            if (usageTime.minutes > 0 || hours == 0) hours++;
-            tablesRevenue[tableNumber - 1] += hours * hourCost;
-
-            if (!waitingQueue.empty()) {
-                string nextClient = waitingQueue.front();
-                waitingQueue.pop();
-                tablesOccupied[tableNumber - 1] = true;
-                clientToTable[nextClient] = tableNumber;
-                tableToClient[tableNumber] = nextClient;
-                tablesUsage[tableNumber - 1] = time;
-                addOutputEvent(time, 12, nextClient + " " + to_string(tableNumber));
+        
+        if (clientToTable.count(clientName)) {
+            int tableNumber = clientToTable[clientName];
+            Time startTime = tables[tableNumber].startTime;
+            Time duration = time - startTime;
+            
+            int hours = duration.toMinutes() / 60;
+            if (duration.toMinutes() % 60 != 0) {
+                hours++;
             }
+            
+            tables[tableNumber].revenue += hours * hourCost;
+            tables[tableNumber].busyTime = tables[tableNumber].busyTime + duration;
+            
+            clientToTable.erase(clientName);
+            tables[tableNumber].currentClient = "";
+            
+            processNextClientFromQueue(time, tableNumber);
+        }
+        
+        clients.erase(clientName);
+    }
+    
+    void addErrorEvent(const Time& time, const string& errorMessage) {
+        events.emplace_back(time, 13, "", 0, errorMessage);
+    }
+    
+    void addOutgoingEvent(const Event& event) {
+        events.push_back(event);
+    }
+    
+    void processNextClientFromQueue(const Time& time, int freedTable) {
+        if (!waitingQueue.empty()) {
+            string nextClient = waitingQueue.front();
+            waitingQueue.pop();
+            
+            tables[freedTable].currentClient = nextClient;
+            clientToTable[nextClient] = freedTable;
+            tables[freedTable].startTime = time;
+            
+            addOutgoingEvent(Event(time, 12, nextClient, freedTable));
         }
     }
 
 public:
-    ComputerClub(int count, const Time& open, const Time& close, int cost) 
-        : tablesCount(count), openTime(open), closeTime(close), hourCost(cost),
-          tablesOccupied(count, false), tablesRevenue(count, 0), tablesUsage(count) {}
-
-    void processEvent(const Time& time, int eventId, const string& body) {
-        stringstream ss(body);
-        string clientName;
-        int tableNumber;
-
-        switch (eventId) {
+    ComputerClub(int tables, const Time& open, const Time& close, int cost)
+        : tablesCount(tables), openTime(open), closeTime(close), hourCost(cost) {
+        for (int i = 1; i <= tablesCount; ++i) {
+            this->tables[i] = TableInfo();
+        }
+    }
+    
+    void processEvent(const Event& event) {
+        events.push_back(event);
+        
+        switch (event.id) {
             case 1:
-                ss >> clientName;
-                handleClientArrived(time, clientName);
+                if (event.time < openTime || event.time >= closeTime) {
+                    addErrorEvent(event.time, "NotOpenYet");
+                    break;
+                }
+                
+                if (isClientInClub(event.clientName)) {
+                    addErrorEvent(event.time, "YouShallNotPass");
+                    break;
+                }
+                
+                clients.insert(event.clientName);
                 break;
             case 2:
-                ss >> clientName >> tableNumber;
-                handleClientSat(time, clientName, tableNumber);
+                processSitEvent(event.time, event.clientName, event.tableNumber);
                 break;
             case 3:
-                ss >> clientName;
-                handleClientWaiting(time, clientName);
+                processWaitingEvent(event.time, event.clientName);
                 break;
             case 4:
-                ss >> clientName;
-                handleClientLeft(time, clientName);
+                processLeaveEvent(event.time, event.clientName);
                 break;
             default:
-                break;
+                throw invalid_argument("Unknown event ID");
         }
     }
-
-    void endOfDay() {
-        vector<string> remainingClients;
-        for (const auto& pair : clientToTable) {
-            remainingClients.push_back(pair.first);
-        }
+    
+    void closeClub() {
+        vector<string> remainingClients(clients.begin(), clients.end());
         sort(remainingClients.begin(), remainingClients.end());
-
-        for (const string& client : remainingClients) {
-            addOutputEvent(closeTime, 11, client);
-            int tableNumber = clientToTable[client];
-            if (tableNumber != -1) {
-                Time usageTime = closeTime - tablesUsage[tableNumber - 1];
-                int hours = usageTime.hours;
-                if (usageTime.minutes > 0 || hours == 0) hours++;
-                tablesRevenue[tableNumber - 1] += hours * hourCost;
+        
+        for (const auto& client : remainingClients) {
+            if (clientToTable.count(client)) {
+                int tableNumber = clientToTable[client];
+                Time startTime = tables[tableNumber].startTime;
+                Time duration = closeTime - startTime;
+                
+                int hours = duration.toMinutes() / 60;
+                if (duration.toMinutes() % 60 != 0) {
+                    hours++;
+                }
+                
+                tables[tableNumber].revenue += hours * hourCost;
+                tables[tableNumber].busyTime = tables[tableNumber].busyTime + duration;
             }
+            addOutgoingEvent(Event(closeTime, 11, client));
         }
     }
-
-    const vector<string>& getOutputEvents() const {
-        return outputEvents;
-    }
-
+    
     void printResults() const {
-        for (int i = 0; i < tablesCount; ++i) {
-            Time totalUsage = tablesUsage[i];
-            if (tablesOccupied[i]) {
-                totalUsage = closeTime - tablesUsage[i];
-            }
-            cout << (i + 1) << " " << tablesRevenue[i] << " " << totalUsage.toString() << endl;
+        cout << openTime.toString() << endl;
+        
+        for (const auto& event : events) {
+            cout << event.toString() << endl;
+        }
+        
+        cout << closeTime.toString() << endl;
+        
+        for (int i = 1; i <= tablesCount; ++i) {
+            const auto& table = tables.at(i);
+            cout << i << " " << table.revenue << " " << table.busyTime.toString() << endl;
         }
     }
 };
+
+vector<string> split(const string& s) {
+    vector<string> tokens;
+    string token;
+    istringstream tokenStream(s);
+    while (tokenStream >> token) {
+        tokens.push_back(token);
+    }
+    return tokens;
+}
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
@@ -246,59 +341,66 @@ int main(int argc, char* argv[]) {
     }
 
     ifstream inputFile(argv[1]);
-    if (!inputFile.is_open()) {
-        cerr << "Error opening file: " << argv[1] << endl;
+    if (!inputFile) {
+        cerr << "Error: Could not open input file" << endl;
         return 1;
     }
 
     try {
-        int tablesCount;
         string line;
-        if (!getline(inputFile, line)) throw runtime_error("Missing tables count");
-        tablesCount = stoi(line);
-        if (tablesCount <= 0) throw runtime_error("Invalid tables count");
-
-        Time openTime, closeTime;
+        
+        if (!getline(inputFile, line)) throw runtime_error("Missing number of tables");
+        int tablesCount = stoi(line);
+        if (tablesCount <= 0) throw runtime_error("Invalid number of tables");
+        
         if (!getline(inputFile, line)) throw runtime_error("Missing working hours");
-        size_t spacePos = line.find(' ');
-        if (spacePos == string::npos) throw runtime_error("Invalid working hours format");
-        openTime = parseTime(line.substr(0, spacePos));
-        closeTime = parseTime(line.substr(spacePos + 1));
-
-        int hourCost;
+        auto timeTokens = split(line);
+        if (timeTokens.size() != 2) throw runtime_error("Invalid working hours format");
+        auto openTime = ComputerClub::Time::fromString(timeTokens[0]);
+        auto closeTime = ComputerClub::Time::fromString(timeTokens[1]);
+        if (closeTime <= openTime) throw runtime_error("Close time must be after open time");
+        
         if (!getline(inputFile, line)) throw runtime_error("Missing hour cost");
-        hourCost = stoi(line);
+        int hourCost = stoi(line);
         if (hourCost <= 0) throw runtime_error("Invalid hour cost");
-
+        
         ComputerClub club(tablesCount, openTime, closeTime, hourCost);
-
-        cout << openTime.toString() << endl;
-
+        
         while (getline(inputFile, line)) {
             if (line.empty()) continue;
-
-            stringstream ss(line);
-            string timeStr, eventIdStr, body;
-            ss >> timeStr >> eventIdStr;
-            getline(ss, body);
-            if (!body.empty() && body[0] == ' ') body = body.substr(1);
-
-            Time time = parseTime(timeStr);
-            int eventId = stoi(eventIdStr);
-
-            cout << line << endl;
-
-            club.processEvent(time, eventId, body);
+            
+            auto tokens = split(line);
+            if (tokens.size() < 2) throw runtime_error("Invalid event format");
+            
+            auto time = ComputerClub::Time::fromString(tokens[0]);
+            int eventId = stoi(tokens[1]);
+            
+            switch (eventId) {
+                case 1:
+                    if (tokens.size() != 3) throw runtime_error("Invalid event 1 format");
+                    club.processEvent(ComputerClub::Event(time, eventId, tokens[2]));
+                    break;
+                case 2:
+                    if (tokens.size() != 4) throw runtime_error("Invalid event 2 format");
+                    club.processEvent(ComputerClub::Event(time, eventId, tokens[2], stoi(tokens[3])));
+                    break;
+                case 3:
+                    if (tokens.size() != 3) throw runtime_error("Invalid event 3 format");
+                    club.processEvent(ComputerClub::Event(time, eventId, tokens[2]));
+                    break;
+                case 4:
+                    if (tokens.size() != 3) throw runtime_error("Invalid event 4 format");
+                    club.processEvent(ComputerClub::Event(time, eventId, tokens[2]));
+                    break;
+                default:
+                    throw runtime_error("Unknown event ID");
+            }
         }
-
-        club.endOfDay();
-
-        cout << closeTime.toString() << endl;
-
+        
+        club.closeClub();
         club.printResults();
-
     } catch (const exception& e) {
-        cerr << e.what() << endl;
+        cerr << "Error: " << e.what() << endl;
         return 1;
     }
 
